@@ -1,0 +1,87 @@
+name: Build FloatLayerDemo face
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-face:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install mono toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mono-runtime mono-mcs libgdiplus \
+            libmono-system-drawing4.0-cil python3 unzip >/dev/null
+
+      - name: Locate project
+        shell: bash
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          for z in *.zip */*.zip; do
+            if [ -f "$z" ]; then unzip -o -q "$z"; fi
+          done
+          PROJ=""
+          for d in . */; do
+            if [ -f "$d/watchface/fprj/app/lua/main.lua" ]; then PROJ="$d"; break; fi
+          done
+          if [ -z "$PROJ" ]; then
+            echo "::error::未找到工程目录，仓库里需要包含 watchface/fprj/app/lua/main.lua"
+            find . -maxdepth 3 -type f | head -40
+            exit 1
+          fi
+          echo "PROJ_DIR=${PROJ%/}" >> "$GITHUB_ENV"
+          echo "工程目录: $PROJ"
+
+      - name: Build .face (mono + official Compiler.exe)
+        shell: bash
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          cd "$PROJ_DIR"
+
+          TOOLS="watchface/tools"
+          FPRJ="watchface/fprj/FloatLayerDemo.fprj"
+          FACE_ID="491552737"
+          OUT="FloatLayerDemo.face"
+
+          if [ ! -f "$TOOLS/Compiler.exe" ]; then
+            echo "::error::缺少 watchface/tools/Compiler.exe"
+            exit 1
+          fi
+          mkdir -p bin "$TOOLS"
+
+          if [ ! -f "$TOOLS/PresentationCore.dll" ]; then
+            printf '%s\n' \
+              'namespace System.Windows.Media { public class ImageSource {} }' \
+              'namespace System.Windows.Media.Imaging {' \
+              '    public class BitmapSource : System.Windows.Media.ImageSource {}' \
+              '    public class BitmapEncoder {}' \
+              '    public class BitmapFrame : BitmapSource {}' \
+              '}' > /tmp/pc.cs
+            mcs -target:library -out:"$TOOLS/PresentationCore.dll" /tmp/pc.cs
+          fi
+
+          if ! ls "$TOOLS"/*Native.dll.so >/dev/null 2>&1; then
+            python3 -c "import urllib.request,zipfile,io,os; d=urllib.request.urlopen('https://api.nuget.org/v3-flatcontainer/magick.net-q16-anycpu/7.1.0/magick.net-q16-anycpu.7.1.0.nupkg',timeout=180).read(); z=zipfile.ZipFile(io.BytesIO(d)); [open(os.path.join('watchface/tools',os.path.basename(n)),'wb').write(z.read(n)) for n in z.namelist() if n.startswith('runtimes/linux-x64/native/')]"
+          fi
+
+          cp -f watchface/fprj/images/preview.png 'watchface/fprj\images\preview.png'
+
+          LD_LIBRARY_PATH="$PWD/$TOOLS" mono "$TOOLS/Compiler.exe" -b "$FPRJ" bin "$OUT" "$FACE_ID"
+
+          python3 -c "p='bin/$OUT'; b=bytearray(open(p,'rb').read()); assert b[:4]==bytes([0x5A,0xA5,0x34,0x12]); i=b'$FACE_ID'; b[5]=10; b[40:50]=bytes(10); b[40:40+len(i)]=i; open(p,'wb').write(b)"
+          ls -la bin/
+
+      - name: Upload .face artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatLayerDemo-face
+          path: |
+            bin/*.face
+            */bin/*.face
+          if-no-files-found: error
