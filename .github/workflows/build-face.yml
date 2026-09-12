@@ -22,16 +22,26 @@ jobs:
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
+          echo "==== 仓库文件（前 60 个）===="
+          find . -maxdepth 3 -not -path './.git*' | head -60
+
           for z in *.zip */*.zip; do
-            if [ -f "$z" ]; then unzip -o -q "$z"; fi
+            if [ -f "$z" ]; then echo "解压 $z"; unzip -o -q "$z"; fi
           done
+
           PROJ=""
+          FALLBACK=""
           for d in . */; do
-            if [ -f "$d/watchface/fprj/app/lua/main.lua" ]; then PROJ="$d"; break; fi
+            if [ -f "$d/watchface/fprj/app/lua/main.lua" ]; then
+              if [ -f "$d/watchface/tools/Compiler.exe" ]; then
+                PROJ="$d"; break
+              fi
+              if [ -z "$FALLBACK" ]; then FALLBACK="$d"; fi
+            fi
           done
+          if [ -z "$PROJ" ]; then PROJ="$FALLBACK"; fi
           if [ -z "$PROJ" ]; then
             echo "::error::未找到工程目录，仓库里需要包含 watchface/fprj/app/lua/main.lua"
-            find . -maxdepth 3 -type f | head -40
             exit 1
           fi
           echo "PROJ_DIR=${PROJ%/}" >> "$GITHUB_ENV"
@@ -49,11 +59,25 @@ jobs:
           FACE_ID="491552737"
           OUT="FloatLayerDemo.face"
 
-          if [ ! -f "$TOOLS/Compiler.exe" ]; then
-            echo "::error::缺少 watchface/tools/Compiler.exe"
-            exit 1
-          fi
           mkdir -p bin "$TOOLS"
+
+          if [ ! -f "$TOOLS/Compiler.exe" ]; then
+            echo "本地缺少 Compiler.exe，自动从上游模板仓库获取..."
+            python3 -c "import urllib.request; open('/tmp/tpl.zip','wb').write(urllib.request.urlopen('https://github.com/FangAiden/LuaDevTemplate/archive/refs/heads/main.zip',timeout=300).read())"
+            rm -rf /tmp/tpl && mkdir -p /tmp/tpl
+            unzip -o -q /tmp/tpl.zip -d /tmp/tpl
+            SRC=$(find /tmp/tpl -path '*/watchface/tools/Compiler.exe' | head -1)
+            if [ -z "$SRC" ]; then
+              echo "::error::无法获取 Compiler.exe（下载上游模板失败或结构变化）"
+              exit 1
+            fi
+            cp -f "$SRC" "$TOOLS/Compiler.exe"
+            for f in LVGLImage.py LVGLImage_v8.py; do
+              S2=$(find /tmp/tpl -path "*/watchface/tools/$f" | head -1)
+              if [ -n "$S2" ] && [ ! -f "$TOOLS/$f" ]; then cp -f "$S2" "$TOOLS/$f"; fi
+            done
+          fi
+          ls -la "$TOOLS"
 
           if [ ! -f "$TOOLS/PresentationCore.dll" ]; then
             printf '%s\n' \
@@ -67,7 +91,16 @@ jobs:
           fi
 
           if ! ls "$TOOLS"/*Native.dll.so >/dev/null 2>&1; then
-            python3 -c "import urllib.request,zipfile,io,os; d=urllib.request.urlopen('https://api.nuget.org/v3-flatcontainer/magick.net-q16-anycpu/7.1.0/magick.net-q16-anycpu.7.1.0.nupkg',timeout=180).read(); z=zipfile.ZipFile(io.BytesIO(d)); [open(os.path.join('watchface/tools',os.path.basename(n)),'wb').write(z.read(n)) for n in z.namelist() if n.startswith('runtimes/linux-x64/native/')]"
+            python3 -c "import urllib.request,zipfile,io,os; d=urllib.request.urlopen('https://api.nuget.org/v3-flatcontainer/magick.net-q16-anycpu/7.1.0/magick.net-q16-anycpu.7.1.0.nupkg',timeout=300).read(); z=zipfile.ZipFile(io.BytesIO(d)); [open(os.path.join('watchface/tools',os.path.basename(n)),'wb').write(z.read(n)) for n in z.namelist() if n.startswith('runtimes/linux-x64/native/')]"
+          fi
+
+          if [ ! -f watchface/fprj/images/preview.png ]; then
+            S3=$(find /tmp/tpl -path '*/watchface/fprj/images/preview.png' 2>/dev/null | head -1)
+            if [ -n "$S3" ]; then mkdir -p watchface/fprj/images && cp -f "$S3" watchface/fprj/images/preview.png; fi
+          fi
+          if [ ! -f watchface/fprj/images/preview.png ]; then
+            echo "::error::缺少 watchface/fprj/images/preview.png"
+            exit 1
           fi
 
           cp -f watchface/fprj/images/preview.png 'watchface/fprj\images\preview.png'
